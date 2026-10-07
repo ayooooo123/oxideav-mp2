@@ -349,12 +349,26 @@ impl Mp2CoreDecoder {
     /// The fixed rate may be off-ladder; only a packet size implying
     /// more than the §2.4.2.3 384 kbit/s Layer II free-format support
     /// ceiling is refused. Non-free-format packets take the ordinary
-    /// [`decode_frame_with`] path unchanged.
+    /// [`decode_frame_with`] path; a packet shorter than its header's
+    /// frame size (the last frame of a stream cut by the end of the
+    /// file) decodes as if zero-padded to that size.
     fn decode_one_packet(&mut self, data: &[u8]) -> Result<DecodedFrame> {
         // Peek the header in free-format-tolerant mode.
         let header = FrameHeader::parse_allow_free_format(data)
             .map_err(|e| Error::other(format!("oxideav-mp2: header parse: {e}")))?;
         if !header.is_free_format() {
+            // FFmpeg clamps only a packet longer than its frame and
+            // decodes a shorter one, whose missing tail its bit reader
+            // reads as zeros (mpegaudiodec_template.c:1599-1604 in
+            // FFmpeg 2da55bf). The padding is bounded by the header's
+            // frame size, 144 × bit rate / sampling rate (< 3 KiB).
+            let frame_size = header.frame_size_bytes();
+            if data.len() < frame_size {
+                let mut padded = data.to_vec();
+                padded.resize(frame_size, 0);
+                return decode_frame_with(&padded, &mut self.state)
+                    .map_err(|e| Error::other(format!("oxideav-mp2: decode_frame: {e}")));
+            }
             return decode_frame_with(data, &mut self.state)
                 .map_err(|e| Error::other(format!("oxideav-mp2: decode_frame: {e}")));
         }
@@ -876,21 +890,38 @@ mod tests {
     }
 
     #[test]
-    fn truncated_packet_returns_decoder_error() {
-        let Some(buf) = fixture_bytes() else { return };
-        let mut packets = split_into_packets(&buf);
-        // Lop off the last 5 bytes of frame 0 — decode_frame_with should
-        // report `Truncated`, which the trait surfaces as `Error::other`.
-        let len = packets[0].data.len();
-        packets[0].data.truncate(len - 5);
-
-        let mut dec = make_decoder(&build_decoder_params(44_100, 2)).unwrap();
-        let err = dec.send_packet(&packets[0]).unwrap_err();
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("buffer too short") || msg.contains("Truncated") || msg.contains("short"),
-            "expected truncation error, got: {msg}"
-        );
+    fn packet_cut_short_decodes_as_its_frame_zero_padded() {
+        // FFmpeg decodes a frame the end of the stream cut short, its bit
+        // reader returning zeros past the end
+        // (mpegaudiodec_template.c:1599-1604): 1152 samples, as if the
+        // missing tail were zero bytes.
+        // MPEG-1 Layer II, CRC, 192 kbit/s, 48 kHz, stereo: 576 B frames.
+        let header = FrameHeader::parse(&[0xFF, 0xFC, 0xA4, 0x00]).unwrap();
+        let pcm: Vec<Vec<f64>> = (0..2)
+            .map(|ch| {
+                (0..PCM_SAMPLES_PER_CHANNEL)
+                    .map(|i| 0.5 * (i as f64 * 0.05 + ch as f64).sin())
+                    .collect()
+            })
+            .collect();
+        let frame = crate::encoder_frame::encode_frame_auto(&header, &pcm, 0).unwrap();
+        assert_eq!(frame.len(), 576);
+        let decode = |data: &[u8]| {
+            let mut dec = make_decoder(&build_decoder_params(48_000, 2)).unwrap();
+            dec.send_packet(&Packet::new(0, TimeBase::new(1, 48_000), data.to_vec()))
+                .expect("send_packet");
+            match dec.receive_frame().expect("receive_frame") {
+                Frame::Audio(audio) => audio,
+                other => panic!("expected audio, got {other:?}"),
+            }
+        };
+        let cut = &frame[..296];
+        let mut padded = cut.to_vec();
+        padded.resize(frame.len(), 0);
+        let short = decode(cut);
+        assert_eq!(short.samples, PCM_SAMPLES_PER_CHANNEL as u32);
+        assert_eq!(short.data, decode(&padded).data);
+        assert_ne!(short.data, decode(&frame).data, "the cut must reach the audio data");
     }
 
     #[test]

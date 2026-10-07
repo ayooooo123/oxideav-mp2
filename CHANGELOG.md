@@ -6,6 +6,13 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `Decoder::send_packet`: a packet shorter than its header's frame size
+  (the last frame of a stream cut by the end of the file) decodes as if
+  zero-padded to that size, 1152 samples, as FFmpeg's decoder does
+  (mpegaudiodec_template.c:1599-1604), instead of being refused.
+
 ## [0.0.10](https://github.com/OxideAV/oxideav-mp2/compare/v0.0.9...v0.0.10) - 2026-08-30
 
 ### Other
