@@ -8,10 +8,20 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- `Decoder::send_packet`: a packet shorter than its header's frame size
-  (the last frame of a stream cut by the end of the file) decodes as if
-  zero-padded to that size, 1152 samples, as FFmpeg's decoder does
-  (mpegaudiodec_template.c:1599-1604), instead of being refused.
+- Packet chunks may contain multiple Layer II frames or fragments of one.
+  `send_packet` retains bounded compressed data; `receive_frame` synthesizes
+  one frame at a time. Grouped PES/WAV payloads no longer lose every frame
+  after the first. The queue is limited to 8 MiB and 4096 chunks.
+- Incomplete frames wait for continuation until `flush`. Only a final
+  truncated frame is zero-padded to its signalled size (1152 samples),
+  matching FFmpeg's tail behavior (mpegaudiodec_template.c:1599-1604).
+  Reset clears framing, timestamps and synthesis state.
+- Preserve a packet's PTS for the first frame that starts in it; subsequent
+  frames have no duplicate timestamp. Free-format input retains the existing
+  one-complete-frame-per-packet requirement.
+- Resolve MPEG1WAVEFORMAT's explicit Layer-II hint before packet data is
+  available. A proven MP2 claim (priority 50) outranks the unprobed Layer-I
+  fallback on shared tag `0x0050`; an actual packet's layer takes precedence.
 
 ## [0.0.10](https://github.com/OxideAV/oxideav-mp2/compare/v0.0.9...v0.0.10) - 2026-08-30
 

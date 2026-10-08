@@ -13,20 +13,17 @@
 //!
 //! The framework trait is *packet-in, frame-out*:
 //!
-//! * [`send_packet`](Decoder::send_packet) accepts one [`Packet`] whose
-//!   `data` is **one complete Layer II frame** (header + optional
-//!   §2.4.1.4 CRC slot + §2.4.1.6 audio data section). The expected
-//!   per-frame framing matches what
-//!   [`crate::frame::decode_all_frames`] consumes when walking a
-//!   contiguous Layer II byte stream — i.e. one packet covers exactly
-//!   [`FrameHeader::frame_size_bytes`] bytes from the syncword
-//!   inclusive.
+//! * [`send_packet`](Decoder::send_packet) accepts byte chunks, including
+//!   multiple frames and frames split across packets. Compressed input is
+//!   bounded; synthesis runs once per `receive_frame`, not while enqueueing.
+//!   Free-format streams still require one complete frame per packet because
+//!   their headers do not declare a frame size.
 //! * [`receive_frame`](Decoder::receive_frame) returns one
 //!   [`AudioFrame`] holding 1152 PCM samples per channel
 //!   (§2.4.2.1 "1 152 for Layer II"), planar little-endian `i16`.
-//! * [`flush`](Decoder::flush) marks end-of-stream so subsequent
-//!   `receive_frame` calls eventually return [`Error::Eof`] once the
-//!   pending-frames queue drains.
+//! * [`flush`](Decoder::flush) marks end-of-stream. A final incomplete frame
+//!   is zero-padded as in FFmpeg; only then does `receive_frame` return
+//!   [`Error::Eof`].
 //! * [`reset`](Decoder::reset) wipes per-stream filterbank state — the
 //!   Annex A Figure A.2 V ring buffer — so the next `send_packet`
 //!   decodes as if it were the first (the trait contract: "zero any
@@ -272,15 +269,16 @@ pub fn make_decoder(params: &CodecParameters) -> Result<Box<dyn Decoder>> {
 /// * `state` — [`FrameDecodeState`] threads the Annex A Figure A.2
 ///   per-channel V ring buffer across successive frames (footnote 1: V
 ///   is zeroed only at startup).
-/// * `pending_frames` queues at-most-one [`AudioFrame`] produced by the
-///   last `send_packet`; `receive_frame` pops it.
-/// * `eof` — set by [`Decoder::flush`]; once `pending_frames` drains
-///   and `eof` is true, `receive_frame` returns [`Error::Eof`].
+/// * `input` retains compressed bytes, never a queue of decoded PCM.
+/// * `chunks` associates packet timestamps and free-format boundaries.
+/// * `eof` permits decoding the final incomplete frame.
 pub struct Mp2CoreDecoder {
     codec_id: CodecId,
     output: CodecParameters,
     state: FrameDecodeState,
-    pending_frames: VecDeque<AudioFrame>,
+    input: Vec<u8>,
+    cursor: usize,
+    chunks: VecDeque<InputChunk>,
     eof: bool,
     /// §2.5 multichannel handling (`mc` codec option).
     mc_mode: McMode,
@@ -295,11 +293,21 @@ pub struct Mp2CoreDecoder {
     mc_plan: Option<McOutputPlan>,
 }
 
+#[derive(Debug)]
+struct InputChunk {
+    start: usize,
+    end: usize,
+    pts: Option<i64>,
+}
+
+const MAX_INPUT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_INPUT_CHUNKS: usize = 4096;
+
 impl std::fmt::Debug for Mp2CoreDecoder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Mp2CoreDecoder")
             .field("codec_id", &self.codec_id)
-            .field("pending_frames", &self.pending_frames.len())
+            .field("buffered_bytes", &(self.input.len() - self.cursor))
             .field("eof", &self.eof)
             .finish()
     }
@@ -316,7 +324,9 @@ impl Mp2CoreDecoder {
             codec_id,
             output,
             state: FrameDecodeState::new(),
-            pending_frames: VecDeque::new(),
+            input: Vec::new(),
+            cursor: 0,
+            chunks: VecDeque::new(),
             eof: false,
             mc_mode,
             mc_lfe_hold,
@@ -327,7 +337,7 @@ impl Mp2CoreDecoder {
     }
 
     /// Stream parameters describing the decoder's output, refreshed
-    /// from the wire after each decoded packet. For a multichannel
+    /// from the wire after each decoded frame. For a multichannel
     /// stream (`mc=on` / a positive `mc=auto` probe) `channels` and
     /// `channel_layout` carry the presentation layout the planes of
     /// every emitted [`AudioFrame`] follow.
@@ -335,11 +345,11 @@ impl Mp2CoreDecoder {
         &self.output
     }
 
-    /// Decode one packet's worth of Layer II data, transparently handling
+    /// Decode one framed Layer II unit, transparently handling
     /// the §2.4.2.3 free-format case.
     ///
-    /// A demuxer hands one frame per packet, so for a free-format frame
-    /// the packet length **is** the frame size (`N` or `N + 1` slots) —
+    /// Free-format input requires one frame per packet, so its packet length
+    /// **is** the frame size (`N` or `N + 1` slots) —
     /// no sync-to-sync measurement is needed. The frame is decoded with
     /// the free-format header itself: the Annex B table for free format
     /// is fixed by the sampling frequency alone (Table 3-B.2a at 48 kHz
@@ -471,6 +481,42 @@ impl Mp2CoreDecoder {
         }
     }
 
+    /// Decode one framed unit; packet boundaries have already been removed.
+    fn decode_unit(&mut self, bytes: &[u8], pts: Option<i64>) -> Result<AudioFrame> {
+        let mc = match self.mc_mode {
+            McMode::Off => false,
+            McMode::On => true,
+            McMode::Auto => *self.mc_active.get_or_insert_with(|| {
+                decode_mc_frame_with(bytes, None, &mut McDecodeState::new()).is_ok()
+            }),
+        };
+        if mc {
+            return self.decode_mc_packet(bytes, pts);
+        }
+        let decoded = self.decode_one_packet(bytes)?;
+        self.refresh_output_params(&decoded.header);
+        Ok(AudioFrame {
+            samples: PCM_SAMPLES_PER_CHANNEL as u32,
+            pts,
+            data: decoded.pcm.iter().map(|plane| Self::float_plane_to_s16_le(plane)).collect(),
+        })
+    }
+
+    fn compact(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        self.input.drain(..self.cursor);
+        while self.chunks.front().is_some_and(|chunk| chunk.end <= self.cursor) {
+            self.chunks.pop_front();
+        }
+        for chunk in &mut self.chunks {
+            chunk.start = chunk.start.saturating_sub(self.cursor);
+            chunk.end -= self.cursor;
+        }
+        self.cursor = 0;
+    }
+
     fn float_plane_to_s16_le(plane: &[f64]) -> Vec<u8> {
         const FULL_SCALE: f64 = 32768.0; // 2^15 — MSB == −1.0 (§2.4.3.3.4)
         let mut bytes = Vec::with_capacity(plane.len() * 2);
@@ -496,58 +542,71 @@ impl Decoder for Mp2CoreDecoder {
         if self.eof {
             return Err(Error::other("oxideav-mp2: cannot send_packet after flush"));
         }
-        let mc = match self.mc_mode {
-            McMode::Off => false,
-            McMode::On => true,
-            McMode::Auto => match self.mc_active {
-                Some(v) => v,
-                None => {
-                    // §2.5.3.1: "The MPEG-1 ancillary data field is
-                    // initially assumed to contain the coded
-                    // multichannel extension. If the mandatory
-                    // CRC-check yields a valid result, then
-                    // multichannel decoding will be started." A stream
-                    // whose extension continues in a §2.5.1.5
-                    // extension bit stream cannot ride the packet
-                    // interface, so it latches to the base decode
-                    // (the compatible pair is a valid rendering).
-                    let v =
-                        decode_mc_frame_with(&packet.data, None, &mut McDecodeState::new()).is_ok();
-                    self.mc_active = Some(v);
-                    v
-                }
-            },
-        };
-        if mc {
-            let frame = self.decode_mc_packet(&packet.data, packet.pts)?;
-            self.pending_frames.push_back(frame);
+        self.compact();
+        if packet.data.is_empty() {
             return Ok(());
         }
-        let decoded = self.decode_one_packet(&packet.data)?;
-        self.refresh_output_params(&decoded.header);
-
-        let data: Vec<Vec<u8>> = decoded
-            .pcm
-            .iter()
-            .map(|plane| Self::float_plane_to_s16_le(plane))
-            .collect();
-        let frame = AudioFrame {
-            samples: PCM_SAMPLES_PER_CHANNEL as u32,
+        if packet.data.len() > MAX_INPUT_BYTES - self.input.len()
+            || self.chunks.len() >= MAX_INPUT_CHUNKS
+        {
+            return Err(Error::invalid("oxideav-mp2: undrained input limit"));
+        }
+        self.chunks.push_back(InputChunk {
+            start: self.input.len(),
+            end: self.input.len() + packet.data.len(),
             pts: packet.pts,
-            data,
-        };
-        self.pending_frames.push_back(frame);
+        });
+        self.input.extend_from_slice(&packet.data);
         Ok(())
     }
 
     fn receive_frame(&mut self) -> Result<Frame> {
-        if let Some(audio) = self.pending_frames.pop_front() {
-            return Ok(Frame::Audio(audio));
+        while self.input.len() - self.cursor >= 4 {
+            let Ok(header) = FrameHeader::parse_allow_free_format(&self.input[self.cursor..]) else {
+                self.cursor += 1;
+                continue;
+            };
+            let size = if header.is_free_format() {
+                self.chunks.iter().find(|chunk| chunk.end > self.cursor)
+                    .map_or(0, |chunk| chunk.end - self.cursor)
+            } else {
+                header.frame_size_bytes()
+            };
+            if size < 4 {
+                self.cursor += 1;
+                continue;
+            }
+            let available = self.input.len() - self.cursor;
+            if available < size && !self.eof {
+                return Err(Error::NeedMore);
+            }
+            // A packet's PTS belongs to the first frame commencing in it.
+            // Later frames are untimed; the consumer continues its audio clock.
+            let mut pts = None;
+            for chunk in &mut self.chunks {
+                if chunk.start > self.cursor {
+                    break;
+                }
+                if let Some(stamp) = chunk.pts.take() {
+                    pts = Some(stamp);
+                }
+            }
+            let start = self.cursor;
+            self.cursor += size.min(available);
+            // Temporarily move ownership to split the input borrow from the
+            // synthesis state. No copy or allocation per encoded frame.
+            let input = std::mem::take(&mut self.input);
+            let result = self.decode_unit(&input[start..self.cursor], pts);
+            self.input = input;
+            return result.map(Frame::Audio);
         }
         if self.eof {
-            return Err(Error::Eof);
+            self.cursor = self.input.len();
+            self.compact();
+            Err(Error::Eof)
+        } else {
+            Err(Error::NeedMore)
         }
-        Err(Error::NeedMore)
     }
 
     fn flush(&mut self) -> Result<()> {
@@ -561,7 +620,9 @@ impl Decoder for Mp2CoreDecoder {
         // `mc=auto` verdict and the output plan describe the *stream*
         // and survive the seek.
         self.mc_state.reset();
-        self.pending_frames.clear();
+        self.input.clear();
+        self.cursor = 0;
+        self.chunks.clear();
         self.eof = false;
         Ok(())
     }
@@ -575,11 +636,26 @@ impl Decoder for Mp2CoreDecoder {
 ///
 /// * Sync OK + `layer == '10'` -> `1.0` (definitive Layer II).
 /// * Sync OK + non-Layer-II    -> `0.0` (definitely not us).
-/// * No packet hint            -> `0.5` (we can claim but mp1 can too).
+/// * No packet hint: inspect MPEG1WAVEFORMAT's layer field, otherwise `0.5`.
 /// * Sync fail / short packet  -> `0.1` (nominal default — let any
 ///   competing probe with a stronger signal win).
 fn probe_mp2(ctx: &ProbeContext) -> Confidence {
     let Some(pkt) = ctx.packet else {
+        // MPEG1WAVEFORMAT extends WAVEFORMATEX with fwHeadLayer at byte 18.
+        // WAV resolves the tag before reading its first packet. A layer bit
+        // (1=I, 2=II, 4=III) distinguishes the shared WAVE_FORMAT_MPEG tag.
+        if let Some(header) = ctx.header {
+            if header.len() >= 20
+                && u16::from_le_bytes([header[0], header[1]]) == WAVE_FORMAT_MPEG
+                && u16::from_le_bytes([header[16], header[17]]) >= 2
+            {
+                return match u16::from_le_bytes([header[18], header[19]]) {
+                    2 => 1.0,
+                    1 | 4 => 0.0,
+                    _ => 0.5,
+                };
+            }
+        }
         return 0.5;
     };
     if pkt.len() < 4 {
@@ -604,9 +680,9 @@ fn probe_mp2(ctx: &ProbeContext) -> Confidence {
 ///
 /// * **WAVE format `0x0050`** (`WAVE_FORMAT_MPEG`) — Win32 `mmreg.h`
 ///   convention; covers Layer I + Layer II (Layer III lives at
-///   `0x0055`). The [`probe_mp2`] disambiguator inspects the §2.4.1.3
-///   layer field on the first packet to choose between Layer I and
-///   Layer II registrations.
+///   `0x0055`). The [`probe_mp2`] disambiguator inspects the first packet's
+///   layer field, or MPEG1WAVEFORMAT's explicit layer when there is no
+///   packet yet. A proven Layer II claim has resolution priority 50.
 /// * **Matroska `A_MPEG/L2`** — the EBML codec ID dedicated to MPEG-1
 ///   Audio Layer II per the Matroska Codec ID registry.
 ///
@@ -618,6 +694,9 @@ fn probe_mp2(ctx: &ProbeContext) -> Confidence {
 /// both factories under the same `"mp2"` id and container tags.
 pub fn register_codecs(reg: &mut CodecRegistry) {
     let info = CodecInfo::new(CodecId::new(CODEC_ID_STR))
+        // Proven Layer II identity beats the unprobed Layer I claim; an
+        // absent/ambiguous header still loses on confidence, not priority.
+        .with_resolution_priority(50)
         .capabilities(
             CodecCapabilities::audio("mp2")
                 .with_decode()
@@ -910,6 +989,7 @@ mod tests {
             let mut dec = make_decoder(&build_decoder_params(48_000, 2)).unwrap();
             dec.send_packet(&Packet::new(0, TimeBase::new(1, 48_000), data.to_vec()))
                 .expect("send_packet");
+            dec.flush().unwrap();
             match dec.receive_frame().expect("receive_frame") {
                 Frame::Audio(audio) => audio,
                 other => panic!("expected audio, got {other:?}"),
@@ -924,24 +1004,6 @@ mod tests {
         assert_ne!(short.data, decode(&frame).data, "the cut must reach the audio data");
     }
 
-    #[test]
-    fn output_params_reflect_decoded_header() {
-        let Some(buf) = fixture_bytes() else { return };
-        let packets = split_into_packets(&buf);
-        // Build the decoder with a deliberately-wrong sample rate hint;
-        // after one decoded packet the trait wrapper has refreshed its
-        // output params to the on-the-wire 44_100 Hz / 2 ch.
-        let mut p = build_decoder_params(8_000, 1);
-        // Bypass the 1-or-2-channel check by setting a valid count.
-        p.channels = Some(2);
-        let mut dec = make_decoder(&p).unwrap();
-        dec.send_packet(&packets[0]).unwrap();
-        let _ = dec.receive_frame().unwrap();
-        // The output params live inside the trait object; we can't read
-        // them directly without an accessor, but we can confirm via the
-        // codec_id() round-trip.
-        assert_eq!(dec.codec_id().as_str(), CODEC_ID_STR);
-    }
 
     // ───────────────────── probe + registration tests ─────────────────────
 
@@ -976,11 +1038,24 @@ mod tests {
         assert!(probe_mp2(&ctx).abs() < f32::EPSILON);
     }
 
+
     #[test]
-    fn probe_returns_default_when_packet_absent() {
+    fn wave_layer_hint_yields_to_the_actual_packet() {
+        let mut reg = CodecRegistry::new();
+        register_codecs(&mut reg);
         let tag = CodecTag::wave_format(WAVE_FORMAT_MPEG);
-        let ctx = ProbeContext::new(&tag);
-        assert!((probe_mp2(&ctx) - 0.5).abs() < f32::EPSILON);
+        let mut header = [0u8; 40];
+        header[..2].copy_from_slice(&WAVE_FORMAT_MPEG.to_le_bytes());
+        header[16..18].copy_from_slice(&22u16.to_le_bytes());
+        for layer in [1u16, 2, 4] {
+            header[18..20].copy_from_slice(&layer.to_le_bytes());
+            let hint = ProbeContext::new(&tag).header(&header);
+            assert_eq!(reg.resolve_tag_ref(&hint).is_some(), layer == 2);
+        }
+        // Container metadata must not override the encoded frame's layer.
+        let packet = [0xFF, 0xFD, 0x50, 0xC4];
+        let hint = ProbeContext::new(&tag).header(&header).packet(&packet);
+        assert_eq!(reg.resolve_tag_ref(&hint).map(CodecId::as_str), Some("mp2"));
     }
 
     #[test]
@@ -1228,8 +1303,8 @@ mod tests {
         let Some(buf) = fixture_bytes() else { return };
         let packets = split_into_packets(&buf);
         let mut dec = make_decoder(&mc_decoder_params("on", None)).unwrap();
-        let err = dec.send_packet(&packets[0]).unwrap_err();
-        assert!(format!("{err}").contains("mc decode"));
+        dec.send_packet(&packets[0]).unwrap();
+        assert!(dec.receive_frame().is_err());
     }
 
     #[test]

@@ -227,6 +227,7 @@
 //!   [`tables_model2`]. For a caller-supplied table, the explicit
 //!   [`encode_frame`] / [`encode_all_frames_with_smr`] paths remain.
 
+#![forbid(unsafe_code)]
 #![warn(missing_debug_implementations)]
 
 use oxideav_core::RuntimeContext;

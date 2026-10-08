@@ -148,6 +148,21 @@ wired into the runtime registry** (frame-in / packet-out
   bitrates (or `mode`) decode frame-by-frame — §2.4.2.3 leaves
   variable-bitrate support optional for a Layer II decoder; this one
   provides it (`mixed_bitrate_stream_decodes_frame_by_frame`).
+- **Runtime packet framing**: `Mp2CoreDecoder` accepts grouped frames and
+  fragments, including WAV byte chunks. It buffers at most 8 MiB / 4096
+  chunks of compressed input and synthesizes one frame per `receive_frame`;
+  no expanded PCM queue is built by `send_packet` or `flush`. An incomplete
+  frame waits for more input; only the final EOF tail is zero-padded.
+  Packet PTS belongs to the first frame starting in that packet. Reset clears
+  framing and filterbank state. `tests/packet_chunks.rs` checks complete
+  sample identity across grouped, split and bytewise input, EOF and reset.
+  Free-format input still requires one complete frame per packet. These
+  framing changes do not alter the floating-point synthesis or its ±1-LSB
+  difference from a fixed-point MP2 decoder.
+- **WAV layer discrimination**: on shared tag `0x0050`, the probe uses the
+  first encoded packet or MPEG1WAVEFORMAT's `fwHeadLayer` when no packet is
+  available yet. An explicit Layer-II match has resolution priority 50 over
+  an unprobed Layer-I fallback; missing/ambiguous hints do not gain confidence.
 - **PCM conformance vs. real fixtures across the whole rate ×
   allocation matrix**: the full decode chain is validated end-to-end
   against the staged `layer2-stereo-44100-192kbps` fixture's
