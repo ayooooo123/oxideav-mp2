@@ -1,13 +1,10 @@
 //! `oxideav_core::Decoder` wiring for MPEG-1 Audio Layer II (MP2).
 //!
-//! Round 182 — registry trait surface. The crate's existing
-//! [`decode_frame`](crate::frame::decode_frame) /
-//! [`decode_frame_with`](crate::frame::decode_frame_with) primitives
-//! already decode one Layer II frame to PCM end-to-end; this module
-//! adapts that path into the framework's packet-in / frame-out
-//! [`oxideav_core::Decoder`] trait so containers (AVI's
-//! `WAVE_FORMAT_MPEG = 0x0050`, Matroska's `A_MPEG/L2`, etc.) can route
-//! Layer II streams via the registry.
+//! Adapts the frame decoder to bounded packet-in / frame-out decoding.
+//! [`make_decoder`] uses the ISO floating implementation;
+//! [`make_decoder_with_synthesis`] uses FFmpeg's Q23 requantization with a
+//! host's shared integer synthesis. Both use the same framing, timestamps,
+//! free-format boundaries and explicit multichannel-extension handling.
 //!
 //! ## Trait-API adaptation
 //!
@@ -32,12 +29,10 @@
 //!
 //! ## Output format
 //!
-//! The decoder emits planar S16 PCM in `Frame::Audio`: `data.len() ==
-//! channels`, each `data[ch]` is `samples_per_channel * 2` bytes of
-//! little-endian `i16`. The §2.4.3.4.7.1 nominal float range
-//! `[-1.0, +1.0]` is mapped to `[i16::MIN, i16::MAX]` with
-//! `s_i16 = clamp(s_f64 * 32768.0, i16::MIN, i16::MAX) as i16`. The
-//! samples-per-channel count is 1152 (the §2.4.2.1 Layer II constant).
+//! The decoder emits 1152 samples/channel as planar little-endian S16.
+//! The ISO path rounds `s_f64 * 32768.0` to nearest and clips; the fixed path
+//! obtains S16 directly from [`FixedSynthesis`], whose integer windowing
+//! retains FFmpeg's rounding remainder rather than rounding independently.
 //!
 //! ## Registration
 //!
@@ -58,10 +53,8 @@ use oxideav_core::{
     SampleFormat,
 };
 
-use crate::frame::{
-    decode_frame_with, decode_frame_with_known_header, DecodedFrame, FrameDecodeState,
-    PCM_SAMPLES_PER_CHANNEL,
-};
+use crate::fixed::FixedSynthesis;
+use crate::frame::{decode_frame_with_known_header, FrameDecodeState, PCM_SAMPLES_PER_CHANNEL};
 use crate::header::FrameHeader;
 use crate::mc::{decode_mc_frame_with, McConfig, McDecodeState, McDecodedFrame, McError};
 
@@ -234,6 +227,23 @@ fn mc_lfe_hold_opt(s: Option<&str>) -> Result<bool> {
 /// count (≤ 8). `sample_rate` is optional (defaults to 44_100 when
 /// absent): the real value is re-read from every frame header anyway.
 pub fn make_decoder(params: &CodecParameters) -> Result<Box<dyn Decoder>> {
+    make_decoder_with_state(params, BaseDecodeState::Float(FrameDecodeState::new()))
+}
+
+/// Decode with FFmpeg's Q23 requantization and a host's shared integer
+/// synthesis implementation. Packet framing, bounds, timestamps and explicit
+/// multichannel extension handling are identical to [`make_decoder`].
+pub fn make_decoder_with_synthesis(
+    params: &CodecParameters,
+    synthesis: Box<dyn FixedSynthesis>,
+) -> Result<Box<dyn Decoder>> {
+    make_decoder_with_state(params, BaseDecodeState::Fixed(synthesis))
+}
+
+fn make_decoder_with_state(
+    params: &CodecParameters,
+    state: BaseDecodeState,
+) -> Result<Box<dyn Decoder>> {
     let mc_mode = mc_mode_opt(params.options.get("mc"))?;
     let mc_lfe_hold = mc_lfe_hold_opt(params.options.get("mc_lfe"))?;
     let channels = params.channels.unwrap_or(1);
@@ -257,7 +267,13 @@ pub fn make_decoder(params: &CodecParameters) -> Result<Box<dyn Decoder>> {
         out_params,
         mc_mode,
         mc_lfe_hold,
+        state,
     )))
+}
+
+enum BaseDecodeState {
+    Float(FrameDecodeState),
+    Fixed(Box<dyn FixedSynthesis>),
 }
 
 /// Packet-to-frame adaptor that wraps the existing
@@ -266,16 +282,15 @@ pub fn make_decoder(params: &CodecParameters) -> Result<Box<dyn Decoder>> {
 ///
 /// State carried across packets:
 ///
-/// * `state` — [`FrameDecodeState`] threads the Annex A Figure A.2
-///   per-channel V ring buffer across successive frames (footnote 1: V
-///   is zeroed only at startup).
+/// * `state` retains either the ISO floating filterbank or the host's shared
+///   fixed-point synthesis history.
 /// * `input` retains compressed bytes, never a queue of decoded PCM.
 /// * `chunks` associates packet timestamps and free-format boundaries.
 /// * `eof` permits decoding the final incomplete frame.
 pub struct Mp2CoreDecoder {
     codec_id: CodecId,
     output: CodecParameters,
-    state: FrameDecodeState,
+    state: BaseDecodeState,
     input: Vec<u8>,
     cursor: usize,
     chunks: VecDeque<InputChunk>,
@@ -319,11 +334,12 @@ impl Mp2CoreDecoder {
         output: CodecParameters,
         mc_mode: McMode,
         mc_lfe_hold: bool,
+        state: BaseDecodeState,
     ) -> Self {
         Self {
             codec_id,
             output,
-            state: FrameDecodeState::new(),
+            state,
             input: Vec::new(),
             cursor: 0,
             chunks: VecDeque::new(),
@@ -345,52 +361,38 @@ impl Mp2CoreDecoder {
         &self.output
     }
 
-    /// Decode one framed Layer II unit, transparently handling
-    /// the §2.4.2.3 free-format case.
-    ///
-    /// Free-format input requires one frame per packet, so its packet length
-    /// **is** the frame size (`N` or `N + 1` slots) —
-    /// no sync-to-sync measurement is needed. The frame is decoded with
-    /// the free-format header itself: the Annex B table for free format
-    /// is fixed by the sampling frequency alone (Table 3-B.2a at 48 kHz
-    /// / 3-B.2b at 44,1 & 32 kHz, per the table headers; LSF uses the
-    /// single 13818-3 Table B.1), applied by
-    /// [`crate::bitalloc::select_table`] to the `bit_rate == 0` header.
-    /// The fixed rate may be off-ladder; only a packet size implying
-    /// more than the §2.4.2.3 384 kbit/s Layer II free-format support
-    /// ceiling is refused. Non-free-format packets take the ordinary
-    /// [`decode_frame_with`] path; a packet shorter than its header's
-    /// frame size (the last frame of a stream cut by the end of the
-    /// file) decodes as if zero-padded to that size.
-    fn decode_one_packet(&mut self, data: &[u8]) -> Result<DecodedFrame> {
-        // Peek the header in free-format-tolerant mode.
+    /// Decode one framed unit. Only the final incomplete frame is padded;
+    /// free format retains its complete-frame-per-packet contract.
+    fn decode_one_packet(&mut self, data: &[u8]) -> Result<(FrameHeader, Vec<Vec<u8>>)> {
         let header = FrameHeader::parse_allow_free_format(data)
             .map_err(|e| Error::other(format!("oxideav-mp2: header parse: {e}")))?;
-        if !header.is_free_format() {
-            // FFmpeg clamps only a packet longer than its frame and
-            // decodes a shorter one, whose missing tail its bit reader
-            // reads as zeros (mpegaudiodec_template.c:1599-1604 in
-            // FFmpeg 2da55bf). The padding is bounded by the header's
-            // frame size, 144 × bit rate / sampling rate (< 3 KiB).
-            let frame_size = header.frame_size_bytes();
-            if data.len() < frame_size {
-                let mut padded = data.to_vec();
-                padded.resize(frame_size, 0);
-                return decode_frame_with(&padded, &mut self.state)
-                    .map_err(|e| Error::other(format!("oxideav-mp2: decode_frame: {e}")));
+        let padded;
+        let frame = if header.is_free_format() {
+            let base_slots = data.len() - usize::from(header.padding);
+            crate::freeformat::bitrate_from_base_slots(&header, base_slots)
+                .map_err(|e| Error::other(format!("oxideav-mp2: free-format: {e}")))?;
+            data
+        } else if data.len() < header.frame_size_bytes() {
+            padded = {
+                let mut bytes = vec![0; header.frame_size_bytes()];
+                bytes[..data.len()].copy_from_slice(data);
+                bytes
+            };
+            &padded
+        } else {
+            &data[..header.frame_size_bytes()]
+        };
+        let planes = match &mut self.state {
+            BaseDecodeState::Float(state) => {
+                decode_frame_with_known_header(frame, header, state).map(|decoded| {
+                    decoded.pcm.iter().map(|plane| Self::float_plane_to_s16_le(plane)).collect()
+                })
             }
-            return decode_frame_with(data, &mut self.state)
-                .map_err(|e| Error::other(format!("oxideav-mp2: decode_frame: {e}")));
-        }
-        // Free format: the packet length is this frame's size. The
-        // recovered bitrate is metadata; the call enforces the §2.4.2.3
-        // support ceiling.
-        let frame_size = data.len();
-        let base_slots = frame_size - if header.padding { 1 } else { 0 };
-        let _bit_rate = crate::freeformat::bitrate_from_base_slots(&header, base_slots)
-            .map_err(|e| Error::other(format!("oxideav-mp2: free-format: {e}")))?;
-        decode_frame_with_known_header(data, header, &mut self.state)
-            .map_err(|e| Error::other(format!("oxideav-mp2: free-format decode: {e}")))
+            BaseDecodeState::Fixed(synthesis) => {
+                crate::fixed::decode_frame(frame, &header, synthesis.as_mut())
+            }
+        }.map_err(|e| Error::other(format!("oxideav-mp2: decode_frame: {e}")))?;
+        Ok((header, planes))
     }
 
     /// Re-derive and update `self.output` from a freshly-parsed frame
@@ -493,12 +495,12 @@ impl Mp2CoreDecoder {
         if mc {
             return self.decode_mc_packet(bytes, pts);
         }
-        let decoded = self.decode_one_packet(bytes)?;
-        self.refresh_output_params(&decoded.header);
+        let (header, data) = self.decode_one_packet(bytes)?;
+        self.refresh_output_params(&header);
         Ok(AudioFrame {
             samples: PCM_SAMPLES_PER_CHANNEL as u32,
             pts,
-            data: decoded.pcm.iter().map(|plane| Self::float_plane_to_s16_le(plane)).collect(),
+            data,
         })
     }
 
@@ -615,7 +617,10 @@ impl Decoder for Mp2CoreDecoder {
     }
 
     fn reset(&mut self) -> Result<()> {
-        self.state.reset();
+        match &mut self.state {
+            BaseDecodeState::Float(state) => state.reset(),
+            BaseDecodeState::Fixed(synthesis) => synthesis.reset(),
+        }
         // §2.5 filterbanks + predictor history re-zero on seek; the
         // `mc=auto` verdict and the output plan describe the *stream*
         // and survive the seek.
@@ -693,7 +698,19 @@ fn probe_mp2(ctx: &ProbeContext) -> Confidence {
 /// full frame-in / packet-out encoder. The single [`CodecInfo`] carries
 /// both factories under the same `"mp2"` id and container tags.
 pub fn register_codecs(reg: &mut CodecRegistry) {
-    let info = CodecInfo::new(CodecId::new(CODEC_ID_STR))
+    reg.register(codec_info().decoder(make_decoder));
+}
+
+/// Register the same MP2 codec/tags/encoder with a host's shared fixed DSP.
+/// No second floating decoder is registered alongside it.
+pub fn register_codecs_with_synthesis<S: FixedSynthesis + Default + 'static>(reg: &mut CodecRegistry) {
+    reg.register(codec_info().decoder(|params| {
+        make_decoder_with_synthesis(params, Box::new(S::default()))
+    }));
+}
+
+fn codec_info() -> CodecInfo {
+    CodecInfo::new(CodecId::new(CODEC_ID_STR))
         // Proven Layer II identity beats the unprobed Layer I claim; an
         // absent/ambiguous header still loses on confidence, not priority.
         .with_resolution_priority(50)
@@ -703,14 +720,12 @@ pub fn register_codecs(reg: &mut CodecRegistry) {
                 .with_encode()
                 .with_lossy(true),
         )
-        .decoder(make_decoder)
         .encoder(crate::codec_encoder::make_encoder)
         .probe(probe_mp2)
         .tags([
             CodecTag::wave_format(WAVE_FORMAT_MPEG),
             CodecTag::matroska("A_MPEG/L2"),
-        ]);
-    reg.register(info);
+        ])
 }
 
 #[cfg(test)]

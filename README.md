@@ -1,14 +1,37 @@
 # oxideav-mp2
 
-[![CI](https://github.com/OxideAV/oxideav-mp2/actions/workflows/ci.yml/badge.svg)](https://github.com/OxideAV/oxideav-mp2/actions/workflows/ci.yml) [![crates.io](https://img.shields.io/crates/v/oxideav-mp2.svg)](https://crates.io/crates/oxideav-mp2) [![docs.rs](https://docs.rs/oxideav-mp2/badge.svg)](https://docs.rs/oxideav-mp2) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/OxideAV/oxideav-mp2/actions/workflows/ci.yml/badge.svg)](https://github.com/OxideAV/oxideav-mp2/actions/workflows/ci.yml) [![crates.io](https://crates.io/crates/oxideav-mp2.svg)](https://crates.io/crates/oxideav-mp2) [![docs.rs](https://docs.rs/oxideav-mp2/badge.svg)](https://docs.rs/oxideav-mp2) [License: MIT and LGPL-2.1-or-later](#license)
 
 A pure-Rust **MPEG-1 / MPEG-2 LSF Audio Layer II** (MP2 / MUSICAM)
 codec for the
 [oxideav](https://github.com/OxideAV/oxideav-workspace) framework.
 
+## Fixed-point host integration
+
+`codec_decoder::make_decoder_with_synthesis` and
+`register_codecs_with_synthesis::<S>` pair FFmpeg 2da55bf's Q23 Layer-II
+requantization with a host implementing `fixed::FixedSynthesis`. The host
+processes 36 blocks per channel, channel-major, with persistent filter history
+and one rounding remainder shared across channels. This avoids duplicating a
+host's existing MPEG-audio DCT and synthesis window.
+
+PearTube's `codec-mp2` adapter uses its unchanged `mpegaudiodsp::MpaSynth`,
+also used by Layer I and Musepack. Its registered decoder is bit-exact against
+FFmpeg's C fixed-point MP2 for 13 mono/stereo/dual/joint cases across all six
+rates, including CRC, all intensity bounds, packet splits and reset. PVA and
+its WAV remux each return all 96,768 samples/channel with zero PCM differences
+and infinite SNR; two truncated TS audio tracks are also exact, tails included.
+No LSB tolerance or audio floor was relaxed.
+
+The fixed path keeps this crate's existing header/allocation/CRC validation.
+Like FFmpeg it does not apply the ISO path's de-emphasis filters. The explicit
+ISO multichannel extension path and the standalone floating APIs below remain
+separate; they are not claimed to be FFmpeg-bit-exact. Free-format registry
+input still requires one complete frame per packet.
+
 ## Status
 
-Clean-room implementation. Every numeric table is read only from
+The standalone floating codec is a clean-room implementation. Its numeric tables are read from
 ISO/IEC 11172-3 (1993) with Annex B, and from ISO/IEC 13818-3 (1997)
 §2.4.2.3 / Annex B Table B.1 for the MPEG-2 LSF (Lower Sampling
 Frequencies) extension. The decoder is complete end-to-end (frame →
@@ -46,7 +69,7 @@ wired into the runtime registry** (frame-in / packet-out
 
 ## What works today
 
-**Decode** — Layer II frames to PCM, MPEG-1 and MPEG-2 LSF:
+**ISO floating decode** — Layer II frames to PCM, MPEG-1 and MPEG-2 LSF:
 
 - **Frame header** (§2.4.1.3 / §2.4.2.3): the 32-bit header parsed into
   a typed `FrameHeader` with full validation — syncword, layer, the
@@ -714,4 +737,7 @@ rejections may `Err`.
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+The ISO codec is MIT — see [LICENSE](./LICENSE).
+The fixed requantization port in `src/fixed.rs` is LGPL-2.1-or-later,
+attributed to FFmpeg 2da55bf — see [LICENSE-LGPL](./LICENSE-LGPL).
+The combined package declares `MIT AND LGPL-2.1-or-later`.

@@ -8,6 +8,12 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Add FFmpeg 2da55bf Q23 requantization with a `FixedSynthesis` host contract,
+  reusing the host's integer DCT/window instead of introducing another DSP.
+  PearTube's shared MPEG-audio synthesis now produces exact PCM for PVA/WAV
+  and the strict rate/mode/CRC/reset reference matrix, including cut EOF tails.
+  Preserve the ISO floating and explicit multichannel APIs separately.
+  The FFmpeg-derived code is LGPL-2.1-or-later, with attribution and license.
 - Packet chunks may contain multiple Layer II frames or fragments of one.
   `send_packet` retains bounded compressed data; `receive_frame` synthesizes
   one frame at a time. Grouped PES/WAV payloads no longer lose every frame

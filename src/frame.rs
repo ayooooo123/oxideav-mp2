@@ -530,7 +530,7 @@ pub fn decode_frame_with(
 /// (allocation + scfsi) section as parsed by
 /// [`parse_audio_data_with_section_bits`]. Header bits 16…31 (frame
 /// bytes 2 and 3) are fed first.
-fn compute_layer2_crc(frame: &[u8], start_bit: u64, total_bits: usize) -> u16 {
+pub(crate) fn compute_layer2_crc(frame: &[u8], start_bit: u64, total_bits: usize) -> u16 {
     // We cannot directly call `crc16_layer2(header_high, header_low,
     // &payload, bits)` because `start_bit` is generally not byte-
     // aligned (when protection_bit == 0, the audio-data section starts

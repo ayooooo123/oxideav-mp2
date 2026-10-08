@@ -194,7 +194,7 @@ pub fn requantize_scaled(
 /// Read the three raw (pre-requantization) sample codes for one triplet
 /// from the bitstream, performing degrouping for grouped classes. Each
 /// returned code is `class.bits_per_sample()` bits wide.
-fn read_triplet_codes(
+pub(crate) fn read_triplet_codes(
     class: &QuantClass,
     reader: &mut BitReader<'_>,
 ) -> Result<[u32; 3], RequantError> {

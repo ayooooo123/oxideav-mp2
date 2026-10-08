@@ -1,18 +1,19 @@
 //! # oxideav-mp2
 //!
-//! Pure-Rust **MPEG-1 / MPEG-2 LSF Audio Layer II** (MP2 / MUSICAM)
-//! codec, clean-room rebuilt against ISO/IEC 11172-3 (1993) and the
-//! §2.4 / Annex B / Annex C low-sampling-rate extension of ISO/IEC
-//! 13818-3 (1997).
+//! Pure-Rust **MPEG-1 / MPEG-2 LSF Audio Layer II** (MP2 / MUSICAM).
+//! The ISO floating codec is rebuilt against ISO/IEC 11172-3 (1993)
+//! and ISO/IEC 13818-3 (1997). The separate [`fixed`] requantizer ports
+//! FFmpeg 2da55bf under LGPL-2.1-or-later and accepts a host's shared
+//! integer synthesis implementation through [`fixed::FixedSynthesis`].
 //!
 //! ## Status
 //!
-//! Clean-room rebuild (started 2026-05-25). The decoder is now complete
+//! ISO floating path (started 2026-05-25). The decoder is now complete
 //! end-to-end (frame → PCM) and validated against a real Layer II
 //! fixture to within the ISO floating-point-filterbank conformance
 //! bound (max abs ≤ 1 LSB; see `tests/layer2_pcm_conformance.rs`); the
-//! encoder is built through frame assembly. Every numeric table is read
-//! only from the staged ISO/IEC 11172-3 / 13818-3 Annexes. The prior
+//! encoder is built through frame assembly. Its numeric tables are read
+//! from the staged ISO/IEC 11172-3 / 13818-3 Annexes. The prior
 //! implementation was retired under the workspace clean-room policy
 //! because its bit-allocation and synthesis-window data tables had been
 //! transcribed from external library source rather than read from the
@@ -244,6 +245,7 @@ pub mod encoder_frame;
 pub mod encoder_samples;
 pub mod encoder_scalefactors;
 pub mod encoder_scfsi;
+pub mod fixed;
 pub mod frame;
 pub mod freeformat;
 pub mod header;
