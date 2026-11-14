@@ -7,7 +7,9 @@ const DATA: &[u8] = include_bytes!("fixtures/stereo_48k_192.mp2");
 fn decoder() -> Box<dyn Decoder> {
     make_decoder(&CodecParameters::audio(CodecId::new("mp2"))).unwrap()
 }
-fn packet(bytes: &[u8]) -> Packet { Packet::new(0, TimeBase::new(1, 48000), bytes.to_vec()) }
+fn packet(bytes: &[u8]) -> Packet {
+    Packet::new(0, TimeBase::new(1, 48000), bytes.to_vec())
+}
 fn drain(decoder: &mut dyn Decoder, out: &mut Vec<i16>) -> usize {
     let mut count = 0;
     loop {
@@ -86,15 +88,28 @@ fn an_incomplete_frame_waits_and_the_final_tail_is_padded_once() {
 fn one_timestamp_per_packet_and_lazy_bounded_input() {
     let size = FrameHeader::parse(DATA).unwrap().frame_size_bytes();
     let mut dec = decoder();
-    dec.send_packet(&packet(&DATA[..size * 2]).with_pts(900)).unwrap();
-    let Frame::Audio(first) = dec.receive_frame().unwrap() else { panic!("audio") };
-    let Frame::Audio(second) = dec.receive_frame().unwrap() else { panic!("audio") };
+    dec.send_packet(&packet(&DATA[..size * 2]).with_pts(900))
+        .unwrap();
+    let Frame::Audio(first) = dec.receive_frame().unwrap() else {
+        panic!("audio")
+    };
+    let Frame::Audio(second) = dec.receive_frame().unwrap() else {
+        panic!("audio")
+    };
     assert_eq!(first.pts, Some(900));
-    assert_eq!(second.pts, None, "do not stamp both frames with the same time");
+    assert_eq!(
+        second.pts, None,
+        "do not stamp both frames with the same time"
+    );
     dec.reset().unwrap();
     let large = vec![0xff; 8 * 1024 * 1024 + 1];
     assert!(dec.send_packet(&packet(&large)).is_err());
     dec.send_packet(&packet(&DATA[..size])).unwrap();
-    let Frame::Audio(frame) = dec.receive_frame().unwrap() else { panic!("audio") };
-    assert_eq!(frame.data, first.data, "rejected input must not alter synthesis state");
+    let Frame::Audio(frame) = dec.receive_frame().unwrap() else {
+        panic!("audio")
+    };
+    assert_eq!(
+        frame.data, first.data,
+        "rejected input must not alter synthesis state"
+    );
 }

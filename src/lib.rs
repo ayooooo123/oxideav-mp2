@@ -233,150 +233,193 @@
 
 use oxideav_core::RuntimeContext;
 
+#[doc(hidden)]
 pub mod analysis;
+#[doc(hidden)]
 pub mod audio_data;
+#[doc(hidden)]
 pub mod bitalloc;
 pub mod codec_decoder;
 pub mod codec_encoder;
+#[doc(hidden)]
 pub mod crc;
+#[doc(hidden)]
 pub mod deemphasis;
+#[doc(hidden)]
 pub mod encoder_bit_allocator;
+#[doc(hidden)]
 pub mod encoder_frame;
+#[doc(hidden)]
 pub mod encoder_samples;
+#[doc(hidden)]
 pub mod encoder_scalefactors;
+#[doc(hidden)]
 pub mod encoder_scfsi;
 pub mod fixed;
 pub mod frame;
+#[doc(hidden)]
 pub mod freeformat;
 pub mod header;
+#[doc(hidden)]
 pub mod j17;
 pub mod mc;
 pub mod mc_encode;
+#[doc(hidden)]
 pub mod psy;
+#[doc(hidden)]
 pub mod requant;
+#[doc(hidden)]
 pub mod surround;
+#[doc(hidden)]
 pub mod synthesis;
+#[doc(hidden)]
 pub mod tables;
+#[doc(hidden)]
 pub mod tables_analysis;
+#[doc(hidden)]
 pub mod tables_d2;
+#[doc(hidden)]
 pub mod tables_lsf;
+#[doc(hidden)]
 pub mod tables_model2;
+#[doc(hidden)]
 pub mod tables_synthesis;
 
+#[doc(hidden)]
 pub use analysis::{AnalysisFilterbank, NUM_SUBBANDS as ANALYSIS_NUM_SUBBANDS, X_BUF_LEN};
+#[doc(hidden)]
 pub use audio_data::{
-    parse_audio_data, parse_audio_data_with_section_bits, write_audio_data,
-    write_audio_data_with_section_bits, AudioData, AudioDataError, AudioDataWriteError, Scfsi,
-    MAX_CHANNELS,
+    AudioData, AudioDataError, AudioDataWriteError, MAX_CHANNELS, Scfsi, parse_audio_data,
+    parse_audio_data_with_section_bits, write_audio_data, write_audio_data_with_section_bits,
 };
+#[doc(hidden)]
 pub use bitalloc::{
-    bitrate_per_channel_kbps, class_of_quantization, is_grouped, select_table, BitAllocTable,
-    QuantClass, NUM_SUBBANDS,
+    BitAllocTable, NUM_SUBBANDS, QuantClass, bitrate_per_channel_kbps, class_of_quantization,
+    is_grouped, select_table,
 };
 pub use codec_decoder::{
-    make_decoder, register_codecs, Mp2CoreDecoder, CODEC_ID_STR, WAVE_FORMAT_MPEG,
+    CODEC_ID_STR, Mp2CoreDecoder, WAVE_FORMAT_MPEG, make_decoder, register_codecs,
 };
-pub use codec_encoder::{default_bitrate_bps, make_encoder, Mp2CoreEncoder};
+pub use codec_encoder::{Mp2CoreEncoder, default_bitrate_bps, make_encoder};
+#[doc(hidden)]
 pub use crc::{
-    crc16_layer2, crc16_step, crc16_update_bits, crc16_update_packed, verify_layer2_crc,
-    INIT_STATE as CRC_INIT_STATE,
+    INIT_STATE as CRC_INIT_STATE, crc16_layer2, crc16_step, crc16_update_bits, crc16_update_packed,
+    verify_layer2_crc,
 };
+#[doc(hidden)]
 pub use deemphasis::{DeEmphasis, PreEmphasis, Section, TAU1_50US, TAU2_15US};
+#[doc(hidden)]
 pub use encoder_bit_allocator::{
-    allocate_bits, available_data_bits, demand_bits, fixed_bit_budget, sample_bits_for, snr_db,
-    BitAllocError, FixedBitBudget, SmrTable, CRC_BITS, HEADER_BITS, SCFSI_BITS_PER_SLOT,
-    WORST_CASE_SCALEFACTOR_BITS_PER_SLOT,
+    BitAllocError, CRC_BITS, FixedBitBudget, HEADER_BITS, SCFSI_BITS_PER_SLOT, SmrTable,
+    WORST_CASE_SCALEFACTOR_BITS_PER_SLOT, allocate_bits, available_data_bits, demand_bits,
+    fixed_bit_budget, sample_bits_for, snr_db,
 };
+#[doc(hidden)]
 pub use encoder_frame::alias_cancellation_guard;
+#[doc(hidden)]
 pub use encoder_frame::{
+    ALIAS_GUARD_DB, EncodeError, EncodeFrameState, MODEL1_WINDOW_DELAY_SAMPLES,
     choose_stereo_coding, encode_all_frames, encode_all_frames_js, encode_all_frames_model2,
     encode_all_frames_with_ancillary, encode_all_frames_with_smr, encode_frame, encode_frame_auto,
     encode_frame_auto_js_model2, encode_frame_auto_js_with, encode_frame_auto_model2,
     encode_frame_auto_with, encode_frame_auto_with_ancillary, encode_frame_with,
-    encode_frame_with_ancillary, encode_frame_with_state_and_ancillary, EncodeError,
-    EncodeFrameState, ALIAS_GUARD_DB, MODEL1_WINDOW_DELAY_SAMPLES,
+    encode_frame_with_ancillary, encode_frame_with_state_and_ancillary,
 };
+#[doc(hidden)]
 pub use encoder_samples::{
-    quantize_sample, quantize_scaled, write_triplet, write_triplet_scaled, SampleWriteError,
+    SampleWriteError, quantize_sample, quantize_scaled, write_triplet, write_triplet_scaled,
 };
+#[doc(hidden)]
 pub use encoder_scalefactors::{
     compute_scalefactors, extract_scalefactor_index, pick_scalefactor_index,
 };
+#[doc(hidden)]
 pub use encoder_scfsi::{
-    classify_difference, select_scfsi, DifferenceClass, ScfsiSelection, TransmissionPattern,
+    DifferenceClass, ScfsiSelection, TransmissionPattern, classify_difference, select_scfsi,
 };
 pub use frame::{
-    decode_all_frames, decode_frame, decode_frame_with, decode_frame_with_known_header,
-    decode_free_format_stream, layer2_crc, Ancillary, DecodedFrame, FrameDecodeState, FrameError,
-    PCM_SAMPLES_PER_CHANNEL, SAMPLES_PER_TRIPLET, SAMPLE_GRANULES_PER_FRAME,
+    Ancillary, DecodedFrame, FrameDecodeState, FrameError, PCM_SAMPLES_PER_CHANNEL,
+    SAMPLE_GRANULES_PER_FRAME, SAMPLES_PER_TRIPLET, decode_all_frames, decode_frame,
+    decode_frame_with, decode_frame_with_known_header, decode_free_format_stream, layer2_crc,
 };
+#[doc(hidden)]
 pub use freeformat::{
-    bitrate_from_base_slots, header_with_recovered_bitrate, measure_base_slots, resolve,
-    rewrite_to_free_format, to_free_format, FreeFormatError, FreeFormatLayout,
+    FreeFormatError, FreeFormatLayout, bitrate_from_base_slots, header_with_recovered_bitrate,
+    measure_base_slots, resolve, rewrite_to_free_format, to_free_format,
 };
 pub use header::{
+    Emphasis, FrameHeader, HeaderError, Mode, ModeExtension, PaddingScheduler, SYNCWORD,
     decode_bitrate, decode_bitrate_lsf, decode_sampling_frequency, decode_sampling_frequency_lsf,
     encode_bitrate, encode_bitrate_lsf, encode_sampling_frequency, encode_sampling_frequency_lsf,
-    find_sync, is_layer2_bitrate_mode_allowed, Emphasis, FrameHeader, HeaderError, Mode,
-    ModeExtension, PaddingScheduler, SYNCWORD,
+    find_sync, is_layer2_bitrate_mode_allowed,
 };
 pub use mc::{
-    decode_mc_frame_with, decode_mc_stream, has_mc_extension, sbgr_of_subband, Centre, McChannel,
-    McConfig, McDecodeState, McDecodedFrame, McDecodedStream, McError, McHeader, Surround,
-    LFE_SAMPLES_PER_FRAME, SBGR_BOUNDS,
+    Centre, LFE_SAMPLES_PER_FRAME, McChannel, McConfig, McDecodeState, McDecodedFrame,
+    McDecodedStream, McError, McHeader, SBGR_BOUNDS, Surround, decode_mc_frame_with,
+    decode_mc_stream, has_mc_extension, sbgr_of_subband,
 };
 pub use mc_encode::{
-    encode_mc_all_frames, encode_mc_frame_with, McEncodeConfig, McEncodeError, McEncodeState,
+    McEncodeConfig, McEncodeError, McEncodeState, encode_mc_all_frames, encode_mc_frame_with,
 };
+#[doc(hidden)]
 pub use psy::{
-    annex_d_sampling_rate, complex_spectrum_polar_layer2, compute_smr_model1_frame,
-    compute_smr_model2_frame, compute_smr_model2_layer2_frame, critical_band_line_ranges,
-    decimate_tonal_maskers, fft_line_to_subband_layer2, global_masking_threshold_db,
-    hann_window_layer2, individual_masking_threshold_db, is_local_maximum, is_tonal_layer2,
-    is_tonal_layer2_for_rate, list_non_tonal_layer2, list_tonal_layer2_for_rate,
-    masker_in_target_window, masking_function_vf, masking_index_non_tonal, masking_index_tonal,
+    FFT_DELAY_COMPENSATION_SHIFT_SAMPLES, IBLEN_LAYER2, LAYER2_FFT_ADDITIONAL_WINDOW_SHIFT_SAMPLES,
+    LAYER2_FFT_BINS, LAYER2_FFT_LEN, MASKING_FUNCTION_DZ_HI, MASKING_FUNCTION_DZ_LO, Masker,
+    MaskerKind, Model2Layer2State, Model2PredictorState, NUM_SUBBANDS_LAYER2, SPL_FULL_SCALE,
+    SPL_PEAK_RMS_CORRECTION_DB, SPL_REFERENCE_LEVEL_DB, SubbandSplMethod,
+    TONAL_DECIMATION_WINDOW_BARK, TONALITY_THRESHOLD_DB, annex_d_sampling_rate,
+    complex_spectrum_polar_layer2, compute_smr_model1_frame, compute_smr_model2_frame,
+    compute_smr_model2_layer2_frame, critical_band_line_ranges, decimate_tonal_maskers,
+    fft_line_to_subband_layer2, global_masking_threshold_db, hann_window_layer2,
+    individual_masking_threshold_db, is_local_maximum, is_tonal_layer2, is_tonal_layer2_for_rate,
+    list_non_tonal_layer2, list_tonal_layer2_for_rate, masker_in_target_window,
+    masking_function_vf, masking_index_non_tonal, masking_index_tonal,
     minimum_masking_threshold_subband, model2_hann_window_layer2, non_tonal_band_index,
     non_tonal_spl_db, normalize_to_spl_reference, partition_energy_and_unpredictability,
     power_density_spectrum_layer2, relevant_maskers_for_target_line, scalefactor_spl_term_db,
     signal_to_mask_ratio_subband, sound_pressure_level_subband, tonal_neighbourhood_layer2,
     tonal_neighbourhood_layer2_for_rate, tonal_spl_db, unpredictability_measure,
-    zero_tonal_neighbourhood_layer2, zero_tonal_neighbourhood_layer2_for_rate, Masker, MaskerKind,
-    Model2Layer2State, Model2PredictorState, SubbandSplMethod,
-    FFT_DELAY_COMPENSATION_SHIFT_SAMPLES, IBLEN_LAYER2, LAYER2_FFT_ADDITIONAL_WINDOW_SHIFT_SAMPLES,
-    LAYER2_FFT_BINS, LAYER2_FFT_LEN, MASKING_FUNCTION_DZ_HI, MASKING_FUNCTION_DZ_LO,
-    NUM_SUBBANDS_LAYER2, SPL_FULL_SCALE, SPL_PEAK_RMS_CORRECTION_DB, SPL_REFERENCE_LEVEL_DB,
-    TONALITY_THRESHOLD_DB, TONAL_DECIMATION_WINDOW_BARK,
+    zero_tonal_neighbourhood_layer2, zero_tonal_neighbourhood_layer2_for_rate,
 };
-pub use requant::{degroup, read_triplet, requantize_code, requantize_scaled, RequantError};
-pub use surround::{apply_surround_processing, PhaseShift90, SurroundProcessor, PHASE_SHIFT_DELAY};
-pub use synthesis::{SynthesisFilterbank, NUM_SUBBANDS as SYNTH_NUM_SUBBANDS, V_BUF_LEN};
-pub use tables::{SCALEFACTORS, SCALEFACTOR_COUNT};
+#[doc(hidden)]
+pub use requant::{RequantError, degroup, read_triplet, requantize_code, requantize_scaled};
+#[doc(hidden)]
+pub use surround::{PHASE_SHIFT_DELAY, PhaseShift90, SurroundProcessor, apply_surround_processing};
+#[doc(hidden)]
+pub use synthesis::{NUM_SUBBANDS as SYNTH_NUM_SUBBANDS, SynthesisFilterbank, V_BUF_LEN};
+#[doc(hidden)]
+pub use tables::{SCALEFACTOR_COUNT, SCALEFACTORS};
+#[doc(hidden)]
 pub use tables_analysis::{C as ANALYSIS_WINDOW, C_LEN as ANALYSIS_WINDOW_LEN};
+#[doc(hidden)]
 pub use tables_d2::{
     CriticalBandBoundary, SamplingRate as PsyAnnexDSamplingRate, TABLE_D_2D_LAYER_II_32KHZ,
     TABLE_D_2E_LAYER_II_44K1HZ, TABLE_D_2F_LAYER_II_48KHZ,
 };
+#[doc(hidden)]
 pub use tables_lsf::{
     TABLE_LSF_D_1D_LTQ_LAYER_II_16, TABLE_LSF_D_1E_LTQ_LAYER_II_22K05,
     TABLE_LSF_D_1F_LTQ_LAYER_II_24, TABLE_LSF_D_2D_LAYER_II_16KHZ, TABLE_LSF_D_2E_LAYER_II_22K05HZ,
     TABLE_LSF_D_2F_LAYER_II_24KHZ,
 };
+#[doc(hidden)]
 pub use tables_model2::{
-    calc_partition_table_for_rate, coder_partition_of_line, coder_partition_span,
-    convolve_partition_spreading, lsf_abs_threshold_layer2_16, lsf_abs_threshold_layer2_22k05,
-    lsf_abs_threshold_layer2_24, normalize_spread_energy, renormalize_unpredictability,
-    rnorm_coefficient, spreading_function, CalcPartition, CoderPartition, CODER_PARTITION_COUNT,
-    TABLE_D_3A_CALC_PARTITION_32KHZ, TABLE_D_3B_CALC_PARTITION_44K1HZ,
-    TABLE_D_3C_CALC_PARTITION_48KHZ, TABLE_D_5_CODER_PARTITION,
+    CODER_PARTITION_COUNT, CalcPartition, CoderPartition, TABLE_D_3A_CALC_PARTITION_32KHZ,
+    TABLE_D_3B_CALC_PARTITION_44K1HZ, TABLE_D_3C_CALC_PARTITION_48KHZ, TABLE_D_5_CODER_PARTITION,
     TABLE_LSF_D_3A_CALC_PARTITION_24KHZ, TABLE_LSF_D_3B_CALC_PARTITION_22K05HZ,
-    TABLE_LSF_D_3C_CALC_PARTITION_16KHZ,
+    TABLE_LSF_D_3C_CALC_PARTITION_16KHZ, calc_partition_table_for_rate, coder_partition_of_line,
+    coder_partition_span, convolve_partition_spreading, lsf_abs_threshold_layer2_16,
+    lsf_abs_threshold_layer2_22k05, lsf_abs_threshold_layer2_24, normalize_spread_energy,
+    renormalize_unpredictability, rnorm_coefficient, spreading_function,
 };
+#[doc(hidden)]
 pub use tables_synthesis::{D as SYNTHESIS_WINDOW, D_LEN as SYNTHESIS_WINDOW_LEN};
 
 /// Crate-local error type. The frame-level decode path is wired up via
 /// [`frame::decode_frame`]; [`Error::NotImplemented`] is reserved for
 /// the §2.4.1.4 encoder path that has not yet been built.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Error {
     /// A 4-byte Layer II header could not be parsed from the input.
     Header(HeaderError),

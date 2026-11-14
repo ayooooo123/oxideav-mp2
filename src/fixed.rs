@@ -14,8 +14,8 @@ use std::sync::LazyLock;
 use oxideav_core::bits::BitReader;
 
 use crate::audio_data::parse_audio_data_with_section_bits;
-use crate::bitalloc::{class_of_quantization, QuantClass};
-use crate::frame::{compute_layer2_crc, FrameError, PCM_SAMPLES_PER_CHANNEL};
+use crate::bitalloc::{QuantClass, class_of_quantization};
+use crate::frame::{FrameError, PCM_SAMPLES_PER_CHANNEL, compute_layer2_crc};
 use crate::header::FrameHeader;
 use crate::requant::read_triplet_codes;
 
@@ -55,7 +55,11 @@ fn unscale(class: &QuantClass, code: u32, scale: u8) -> i32 {
     if class.grouping {
         let value = (code as i32 - (class.nb_steps >> 1) as i32)
             * SCALE_FACTOR_MULT2[(class.nb_steps >> 2) as usize][modulo];
-        if shift == 0 { value } else { (value + (1 << (shift - 1))) >> shift }
+        if shift == 0 {
+            value
+        } else {
+            (value + (1 << (shift - 1))) >> shift
+        }
     } else {
         let n = class.bits_per_codeword - 1;
         let mantissa = code.wrapping_add(u32::MAX << n).wrapping_add(1) as i32;
@@ -72,7 +76,10 @@ pub(crate) fn decode_frame(
 ) -> Result<Vec<Vec<u8>>, FrameError> {
     let start = if header.protection_bit { 4 } else { 6 };
     if frame.len() < start {
-        return Err(FrameError::Truncated { have: frame.len(), need: start });
+        return Err(FrameError::Truncated {
+            have: frame.len(),
+            need: start,
+        });
     }
     let mut reader = BitReader::with_position(frame, start);
     let alloc_start = reader.bit_position();
@@ -91,11 +98,20 @@ pub(crate) fn decode_frame(
             let coded_channels = if sb < audio.bound { audio.channels } else { 1 };
             for ch in 0..coded_channels {
                 let steps = audio.nb_steps[ch][sb];
-                if steps == 0 { continue; }
-                let class = class_of_quantization(steps)
-                    .ok_or(FrameError::UnknownQuantClass { ch, sb, nb_steps: steps })?;
+                if steps == 0 {
+                    continue;
+                }
+                let class = class_of_quantization(steps).ok_or(FrameError::UnknownQuantClass {
+                    ch,
+                    sb,
+                    nb_steps: steps,
+                })?;
                 let codes = read_triplet_codes(&class, &mut reader)?;
-                let end = if sb < audio.bound { ch + 1 } else { audio.channels };
+                let end = if sb < audio.bound {
+                    ch + 1
+                } else {
+                    audio.channels
+                };
                 for channel in ch..end {
                     let scale = audio.scalefactor[channel][sb][granule / 4];
                     for (i, &code) in codes.iter().enumerate() {
@@ -108,7 +124,13 @@ pub(crate) fn decode_frame(
 
     let mut pcm = [[0i16; PCM_SAMPLES_PER_CHANNEL]; 2];
     synthesis.synthesize(&subbands[..audio.channels], &mut pcm[..audio.channels]);
-    Ok(pcm[..audio.channels].iter().map(|plane| {
-        plane.iter().flat_map(|sample| sample.to_le_bytes()).collect()
-    }).collect())
+    Ok(pcm[..audio.channels]
+        .iter()
+        .map(|plane| {
+            plane
+                .iter()
+                .flat_map(|sample| sample.to_le_bytes())
+                .collect()
+        })
+        .collect())
 }

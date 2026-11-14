@@ -37,8 +37,8 @@
 //!    differs from `0xF`.
 
 use oxideav_mp2::{
-    decode_frame, find_sync, AudioDataError, Emphasis, FrameError, FrameHeader, HeaderError, Mode,
-    ModeExtension,
+    AudioDataError, Emphasis, FrameError, FrameHeader, HeaderError, Mode, ModeExtension,
+    decode_frame, find_sync,
 };
 
 /// Build a 4-byte Layer II header from explicit field values.
@@ -138,9 +138,8 @@ fn header_bit_flips_never_panic_or_violate_postconditions() {
             }
             Err(err) => {
                 // Every error must be one of the documented variants;
-                // the match below is exhaustive (no wildcard) so a new
-                // variant added without updating this test fails to
-                // compile.
+                // `HeaderError` is `#[non_exhaustive]`, so anything else
+                // fails the test.
                 match err {
                     HeaderError::BufferTooShort
                     | HeaderError::BadSync
@@ -152,6 +151,7 @@ fn header_bit_flips_never_panic_or_violate_postconditions() {
                     | HeaderError::DisallowedBitrateModeCombination { .. }
                     | HeaderError::UnsupportedBitrate(_)
                     | HeaderError::UnsupportedSamplingFrequency(_) => {}
+                    other => panic!("undocumented HeaderError variant: {other:?}"),
                 }
             }
         }

@@ -54,9 +54,9 @@ use oxideav_core::{
 };
 
 use crate::fixed::FixedSynthesis;
-use crate::frame::{decode_frame_with_known_header, FrameDecodeState, PCM_SAMPLES_PER_CHANNEL};
+use crate::frame::{FrameDecodeState, PCM_SAMPLES_PER_CHANNEL, decode_frame_with_known_header};
 use crate::header::FrameHeader;
-use crate::mc::{decode_mc_frame_with, McConfig, McDecodeState, McDecodedFrame, McError};
+use crate::mc::{McConfig, McDecodeState, McDecodedFrame, McError, decode_mc_frame_with};
 
 /// Codec id under which [`register_codecs`] installs this decoder.
 pub const CODEC_ID_STR: &str = "mp2";
@@ -383,15 +383,19 @@ impl Mp2CoreDecoder {
             &data[..header.frame_size_bytes()]
         };
         let planes = match &mut self.state {
-            BaseDecodeState::Float(state) => {
-                decode_frame_with_known_header(frame, header, state).map(|decoded| {
-                    decoded.pcm.iter().map(|plane| Self::float_plane_to_s16_le(plane)).collect()
-                })
-            }
+            BaseDecodeState::Float(state) => decode_frame_with_known_header(frame, header, state)
+                .map(|decoded| {
+                    decoded
+                        .pcm
+                        .iter()
+                        .map(|plane| Self::float_plane_to_s16_le(plane))
+                        .collect()
+                }),
             BaseDecodeState::Fixed(synthesis) => {
                 crate::fixed::decode_frame(frame, &header, synthesis.as_mut())
             }
-        }.map_err(|e| Error::other(format!("oxideav-mp2: decode_frame: {e}")))?;
+        }
+        .map_err(|e| Error::other(format!("oxideav-mp2: decode_frame: {e}")))?;
         Ok((header, planes))
     }
 
@@ -509,7 +513,11 @@ impl Mp2CoreDecoder {
             return;
         }
         self.input.drain(..self.cursor);
-        while self.chunks.front().is_some_and(|chunk| chunk.end <= self.cursor) {
+        while self
+            .chunks
+            .front()
+            .is_some_and(|chunk| chunk.end <= self.cursor)
+        {
             self.chunks.pop_front();
         }
         for chunk in &mut self.chunks {
@@ -564,12 +572,15 @@ impl Decoder for Mp2CoreDecoder {
 
     fn receive_frame(&mut self) -> Result<Frame> {
         while self.input.len() - self.cursor >= 4 {
-            let Ok(header) = FrameHeader::parse_allow_free_format(&self.input[self.cursor..]) else {
+            let Ok(header) = FrameHeader::parse_allow_free_format(&self.input[self.cursor..])
+            else {
                 self.cursor += 1;
                 continue;
             };
             let size = if header.is_free_format() {
-                self.chunks.iter().find(|chunk| chunk.end > self.cursor)
+                self.chunks
+                    .iter()
+                    .find(|chunk| chunk.end > self.cursor)
                     .map_or(0, |chunk| chunk.end - self.cursor)
             } else {
                 header.frame_size_bytes()
@@ -649,17 +660,16 @@ fn probe_mp2(ctx: &ProbeContext) -> Confidence {
         // MPEG1WAVEFORMAT extends WAVEFORMATEX with fwHeadLayer at byte 18.
         // WAV resolves the tag before reading its first packet. A layer bit
         // (1=I, 2=II, 4=III) distinguishes the shared WAVE_FORMAT_MPEG tag.
-        if let Some(header) = ctx.header {
-            if header.len() >= 20
-                && u16::from_le_bytes([header[0], header[1]]) == WAVE_FORMAT_MPEG
-                && u16::from_le_bytes([header[16], header[17]]) >= 2
-            {
-                return match u16::from_le_bytes([header[18], header[19]]) {
-                    2 => 1.0,
-                    1 | 4 => 0.0,
-                    _ => 0.5,
-                };
-            }
+        if let Some(header) = ctx.header
+            && header.len() >= 20
+            && u16::from_le_bytes([header[0], header[1]]) == WAVE_FORMAT_MPEG
+            && u16::from_le_bytes([header[16], header[17]]) >= 2
+        {
+            return match u16::from_le_bytes([header[18], header[19]]) {
+                2 => 1.0,
+                1 | 4 => 0.0,
+                _ => 0.5,
+            };
         }
         return 0.5;
     };
@@ -672,11 +682,7 @@ fn probe_mp2(ctx: &ProbeContext) -> Confidence {
         return 0.1;
     }
     let layer_bits = (word >> 17) & 0x3;
-    if layer_bits == 0b10 {
-        1.0
-    } else {
-        0.0
-    }
+    if layer_bits == 0b10 { 1.0 } else { 0.0 }
 }
 
 /// Install the MPEG-1 Audio Layer II decoder factory into `reg`.
@@ -703,10 +709,12 @@ pub fn register_codecs(reg: &mut CodecRegistry) {
 
 /// Register the same MP2 codec/tags/encoder with a host's shared fixed DSP.
 /// No second floating decoder is registered alongside it.
-pub fn register_codecs_with_synthesis<S: FixedSynthesis + Default + 'static>(reg: &mut CodecRegistry) {
-    reg.register(codec_info().decoder(|params| {
-        make_decoder_with_synthesis(params, Box::new(S::default()))
-    }));
+pub fn register_codecs_with_synthesis<S: FixedSynthesis + Default + 'static>(
+    reg: &mut CodecRegistry,
+) {
+    reg.register(
+        codec_info().decoder(|params| make_decoder_with_synthesis(params, Box::new(S::default()))),
+    );
 }
 
 fn codec_info() -> CodecInfo {
@@ -851,10 +859,10 @@ mod tests {
         // its bitrate_index nibble to '0000' (free format), and confirm the
         // trait decoder recovers the bitrate from the packet length and
         // produces the SAME PCM as the standard-bitrate packet.
+        use crate::NUM_SUBBANDS;
         use crate::encoder_bit_allocator::SmrTable;
         use crate::encoder_frame::encode_frame;
         use crate::header::{Emphasis, Mode, ModeExtension};
-        use crate::NUM_SUBBANDS;
 
         // 192 kbit/s stereo at 44,1 kHz: 96 kbit/s per channel selects
         // Table B.2b — the same table conforming decoders use for free
@@ -1016,9 +1024,12 @@ mod tests {
         let short = decode(cut);
         assert_eq!(short.samples, PCM_SAMPLES_PER_CHANNEL as u32);
         assert_eq!(short.data, decode(&padded).data);
-        assert_ne!(short.data, decode(&frame).data, "the cut must reach the audio data");
+        assert_ne!(
+            short.data,
+            decode(&frame).data,
+            "the cut must reach the audio data"
+        );
     }
-
 
     // ───────────────────── probe + registration tests ─────────────────────
 
@@ -1052,7 +1063,6 @@ mod tests {
         let ctx = ProbeContext::new(&tag).packet(&pkt);
         assert!(probe_mp2(&ctx).abs() < f32::EPSILON);
     }
-
 
     #[test]
     fn wave_layer_hint_yields_to_the_actual_packet() {
@@ -1145,7 +1155,7 @@ mod tests {
     /// Encode a short 3/2 (+ optional LFE) multichannel stream with the
     /// crate's own §2.5 encoder and split it into per-frame packets.
     fn mc_stream_packets(lfe: bool, n_frames: usize) -> (Vec<Packet>, Vec<Vec<f64>>) {
-        use crate::mc_encode::{encode_mc_all_frames, McEncodeConfig};
+        use crate::mc_encode::{McEncodeConfig, encode_mc_all_frames};
 
         let header = FrameHeader {
             lsf: false,
@@ -1264,7 +1274,9 @@ mod tests {
         }
         // The LFE plane repeats each native-rate sample 96×.
         let lfe_plane: Vec<i16> = planes[3]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| i16::from_le_bytes([c[0], c[1]]))
             .collect();
         assert_eq!(lfe_plane.len(), lfe_native.len() * 96);
@@ -1428,7 +1440,9 @@ mod tests {
         let bytes = Mp2CoreDecoder::float_plane_to_s16_le(&plane);
         assert_eq!(bytes.len(), plane.len() * 2);
         let words: Vec<i16> = bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| i16::from_le_bytes([c[0], c[1]]))
             .collect();
         assert_eq!(words[0], 0);
